@@ -75,3 +75,37 @@ kernel void softmax_grad(
         grad_output[i] = predictions[i] - (i == true_label ? 1.0 : 0.0);
     }
 }
+
+// Kernel to compute the loss (e.g., mean squared error for simplicity)
+kernel void computeLoss(
+    device float* predictions [[ buffer(0) ]],
+    device float* targets [[ buffer(1) ]],
+    device float* loss [[ buffer(2) ]],
+    uint gid [[ thread_position_in_grid ]]
+) {
+    float error = predictions[gid] - targets[gid];
+    loss[gid] = 0.5 * error * error; // Mean squared error for now
+}
+
+// Kernel to compute the gradient of the loss with respect to the output
+kernel void computeOutputGradient(
+    device float* predictions [[ buffer(0) ]],
+    device float* targets [[ buffer(1) ]],
+    device float* outputGradient [[ buffer(2) ]],
+    uint gid [[ thread_position_in_grid ]]
+) {
+    outputGradient[gid] = predictions[gid] - targets[gid]; // Derivative for MSE
+}
+
+// Kernel to update weights based on the gradients
+kernel void updateWeights(
+    device float* weights [[ buffer(0) ]],
+    device float* gradients [[ buffer(1) ]],
+    device float* learningRateBuffer [[ buffer(2) ]], // Learning rate as a buffer
+    uint gid [[ thread_position_in_grid ]]
+) {
+    float learningRate = learningRateBuffer[0]; // Load the learning rate from the buffer
+    weights[gid] -= learningRate * gradients[gid]; // Gradient descent step
+}
+
+

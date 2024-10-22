@@ -8,7 +8,7 @@
 import Metal
 import MetalKit
 
-// get the default metal device
+// Get the default metal device
 guard let device = MTLCreateSystemDefaultDevice() else {
     fatalError("Metal is not supported on this device")
 }
@@ -19,78 +19,121 @@ let commandQueue = device.makeCommandQueue()!
 // Define matrix size (e.g., for a fully connected layer with 512 neurons)
 let matrixWidth = 512
 let inputSize = 28 * 28 // MNIST image size (flattened)
+let outputSize = 10 // Number of classes for MNIST
 
 // Allocate buffers for the network layers
 guard let inputBuffer = device.makeBuffer(length: inputSize * MemoryLayout<Float>.stride, options: []),
       let weightBuffer1 = device.makeBuffer(length: inputSize * matrixWidth * MemoryLayout<Float>.stride, options: []),
       let biasBuffer1 = device.makeBuffer(length: matrixWidth * MemoryLayout<Float>.stride, options: []),
       let outputBuffer1 = device.makeBuffer(length: matrixWidth * MemoryLayout<Float>.stride, options: []),
-      let weightBuffer2 = device.makeBuffer(length: matrixWidth * matrixWidth * MemoryLayout<Float>.stride, options: []),
-      let biasBuffer2 = device.makeBuffer(length: matrixWidth * MemoryLayout<Float>.stride, options: []),
-      let outputBuffer2 = device.makeBuffer(length: matrixWidth * MemoryLayout<Float>.stride, options: []) else {
+      let weightBuffer2 = device.makeBuffer(length: matrixWidth * outputSize * MemoryLayout<Float>.stride, options: []),
+      let biasBuffer2 = device.makeBuffer(length: outputSize * MemoryLayout<Float>.stride, options: []),
+      let outputBuffer2 = device.makeBuffer(length: outputSize * MemoryLayout<Float>.stride, options: []),
+      let targetBuffer = device.makeBuffer(length: outputSize * MemoryLayout<Float>.stride, options: []),
+      let lossBuffer = device.makeBuffer(length: outputSize * MemoryLayout<Float>.stride, options: []),
+      let gradientBuffer = device.makeBuffer(length: outputSize * MemoryLayout<Float>.stride, options: []) else {
     fatalError("Failed to create Metal buffers")
 }
 
-// Initialize inputBuffer with random values
-let inputPointer = inputBuffer.contents().bindMemory(to: Float.self, capacity: inputSize)
-for i in 0..<inputSize {
-    inputPointer[i] = Float.random(in: 0..<1)
-}
 
-// Initialize weightBuffer1 with random values
-let weightPointer1 = weightBuffer1.contents().bindMemory(to: Float.self, capacity: inputSize * matrixWidth)
-for i in 0..<inputSize * matrixWidth {
-    weightPointer1[i] = Float.random(in: 0..<1)
-}
+// Create command buffer
+let commandBuffer = commandQueue.makeCommandBuffer()!
 
-// Print input values for verification
-for i in 0..<inputSize {
-    print("Input value \(i): \(inputPointer[i])")
-}
 
-// Define the Metal compute pipeline for matrix multiplication
-let library = device.makeDefaultLibrary()
-guard let matMulFunction = library?.makeFunction(name: "matMul") else {
-    fatalError("Failed to create matMul function from library")
-}
-let matMulPipelineState = try! device.makeComputePipelineState(function: matMulFunction)
+// Load the Metal shader functions (assuming we have a Metal library)
+let library = try device.makeDefaultLibrary(bundle: .main)
+let matMulFunction = library.makeFunction(name: "matMul")!
+let reluActivationFunction = library.makeFunction(name: "reluActivation")!
+let computeLossFunction = library.makeFunction(name: "computeLoss")!
+let computeOutputGradientFunction = library.makeFunction(name: "computeOutputGradient")!
+let updateWeightsFunction = library.makeFunction(name: "updateWeights")!
 
-// Command buffer to run the Metal commands
-guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-    fatalError("Failed to create command buffer")
-}
+// Create compute pipeline states
+let matMulPipeline = try device.makeComputePipelineState(function: matMulFunction)
+let reluActivationPipeline = try device.makeComputePipelineState(function: reluActivationFunction)
+let computeLossPipeline = try device.makeComputePipelineState(function: computeLossFunction)
+let computeOutputGradientPipeline = try device.makeComputePipelineState(function: computeOutputGradientFunction)
+let updateWeightsPipeline = try device.makeComputePipelineState(function: updateWeightsFunction)
 
-// Create a compute encoder
-guard let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
-    fatalError("Failed to create compute encoder")
-}
 
-// Configure the first layer
-computeEncoder.setBuffer(inputBuffer, offset: 0, index: 0)
-computeEncoder.setBuffer(weightBuffer1, offset: 0, index: 1)
-computeEncoder.setBuffer(outputBuffer1, offset: 0, index: 2)
+// Configure threadgroup size for 1D grid (only width)
+let threadGroupSize = MTLSize(width: 512, height: 1, depth: 1)  // 1D threads per group (match matrix width)
+let threadGroupCount = MTLSize(width: (matrixWidth + 511) / 512, height: 1, depth: 1) // Ensure we cover the matrix
 
-// Set the pipeline state
-computeEncoder.setComputePipelineState(matMulPipelineState)
+// Forward pass: Layer 1 (input to hidden)
+let matMulEncoder1 = commandBuffer.makeComputeCommandEncoder()!
+matMulEncoder1.setComputePipelineState(matMulPipeline)
+matMulEncoder1.setBuffer(inputBuffer, offset: 0, index: 0) // Input
+matMulEncoder1.setBuffer(weightBuffer1, offset: 0, index: 1) // Weights
+matMulEncoder1.setBuffer(outputBuffer1, offset: 0, index: 2) // Output
+matMulEncoder1.dispatchThreads(threadGroupCount, threadsPerThreadgroup: threadGroupSize) // Dispatch with the corrected 1D configuration
+matMulEncoder1.endEncoding()
 
-// Define grid size and thread group size (assuming square grids)
-let gridSize = MTLSize(width: matrixWidth, height: 1, depth: 1)
-let threadGroupSize = MTLSize(width: min(matMulPipelineState.maxTotalThreadsPerThreadgroup, matrixWidth), height: 1, depth: 1)
+// Activation: ReLU Layer 1
+let reluEncoder1 = commandBuffer.makeComputeCommandEncoder()!
+reluEncoder1.setComputePipelineState(reluActivationPipeline)
+reluEncoder1.setBuffer(outputBuffer1, offset: 0, index: 0) // Input (post-matMul)
+reluEncoder1.setBuffer(outputBuffer1, offset: 0, index: 1) // Output (overwritten)
+reluEncoder1.dispatchThreads(threadGroupCount, threadsPerThreadgroup: threadGroupSize) // Correct dispatch for ReLU with 1D
+reluEncoder1.endEncoding()
 
-// Dispatch the compute shader
-computeEncoder.dispatchThreads(gridSize, threadsPerThreadgroup: threadGroupSize)
 
-// End encoding and commit the command buffer
-computeEncoder.endEncoding()
+
+// Forward pass: Layer 2 (hidden to output)
+let matMulEncoder2 = commandBuffer.makeComputeCommandEncoder()!
+matMulEncoder2.setComputePipelineState(matMulPipeline)
+matMulEncoder2.setBuffer(outputBuffer1, offset: 0, index: 0)    // Input (from Layer 1)
+matMulEncoder2.setBuffer(weightBuffer2, offset: 0, index: 1)    // Weights
+matMulEncoder2.setBuffer(outputBuffer2, offset: 0, index: 2)    // Output
+matMulEncoder2.dispatchThreads(threadGroupCount, threadsPerThreadgroup: threadGroupSize)
+matMulEncoder2.endEncoding()
+
+// Activation: ReLU Layer 2
+let reluEncoder2 = commandBuffer.makeComputeCommandEncoder()!
+reluEncoder2.setComputePipelineState(reluActivationPipeline)
+reluEncoder2.setBuffer(outputBuffer2, offset: 0, index: 0) // Input (post-matMul)
+reluEncoder2.setBuffer(outputBuffer2, offset: 0, index: 1) // Output (overwritten)
+reluEncoder2.dispatchThreads(threadGroupCount, threadsPerThreadgroup: threadGroupSize)
+reluEncoder2.endEncoding()
+
+// Compute Loss
+let lossEncoder = commandBuffer.makeComputeCommandEncoder()!
+lossEncoder.setComputePipelineState(computeLossPipeline)
+lossEncoder.setBuffer(outputBuffer2, offset: 0, index: 0) // Predictions
+lossEncoder.setBuffer(targetBuffer, offset: 0, index: 1)  // Targets (ground truth)
+lossEncoder.setBuffer(lossBuffer, offset: 0, index: 2)    // Loss output
+lossEncoder.dispatchThreads(threadGroupCount, threadsPerThreadgroup: threadGroupSize)
+lossEncoder.endEncoding()
+
+// Compute Output Gradient (for backpropagation)
+let gradientEncoder = commandBuffer.makeComputeCommandEncoder()!
+gradientEncoder.setComputePipelineState(computeOutputGradientPipeline)
+gradientEncoder.setBuffer(outputBuffer2, offset: 0, index: 0) // Predictions
+gradientEncoder.setBuffer(targetBuffer, offset: 0, index: 1)  // Targets
+gradientEncoder.setBuffer(gradientBuffer, offset: 0, index: 2) // Gradient output
+gradientEncoder.dispatchThreads(threadGroupCount, threadsPerThreadgroup: threadGroupSize)
+gradientEncoder.endEncoding()
+
+// Create a buffer for the learning rate
+var learningRate: Float = 0.01
+let learningRateBuffer = device.makeBuffer(bytes: &learningRate, length: MemoryLayout<Float>.stride, options: [])
+
+// Update weights (Layer 2)
+let updateWeightsEncoder2 = commandBuffer.makeComputeCommandEncoder()!
+updateWeightsEncoder2.setComputePipelineState(updateWeightsPipeline)
+updateWeightsEncoder2.setBuffer(weightBuffer2, offset: 0, index: 0)  // Weights
+updateWeightsEncoder2.setBuffer(gradientBuffer, offset: 0, index: 1) // Gradients
+updateWeightsEncoder2.setBuffer(learningRateBuffer, offset: 0, index: 2) // Learning rate buffer
+updateWeightsEncoder2.dispatchThreads(threadGroupCount, threadsPerThreadgroup: threadGroupSize)
+updateWeightsEncoder2.endEncoding()
+
+
+// Update Weights (Layer 1)
+// Similar process to update layer 1 weights using backpropagation through the hidden layer
+
+// Commit the command buffer and wait for completion
 commandBuffer.commit()
-
-// Wait for completion
 commandBuffer.waitUntilCompleted()
 
-// Print results (for debugging purposes)
-let outputPointer = outputBuffer1.contents().bindMemory(to: Float.self, capacity: matrixWidth)
-for i in 0..<matrixWidth {
-    print("Output neuron \(i): \(outputPointer[i])")
-}
+print("Training step completed.")
 
-// This handles the forward pass for the first layer; similar code can be written for additional layers.
