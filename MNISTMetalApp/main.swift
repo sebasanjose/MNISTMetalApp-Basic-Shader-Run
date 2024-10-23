@@ -8,6 +8,40 @@
 import Metal
 import MetalKit
 
+import Foundation
+
+print("Starting MNIST dataset download and processing...")
+
+let semaphore = DispatchSemaphore(value: 0)  // Create a semaphore to wait for completion
+
+downloadMNIST { dataset in
+    if let dataset = dataset {
+        print("MNIST dataset downloaded and processed.")
+        
+        let trainDataPoints = dataset.trainImages.count
+        let validDataPoints = dataset.testImages.count
+        
+        print("Train dataset:")
+        print("Number of datapoints: \(trainDataPoints)")
+        print("Root location: ./data/")
+        print("Split: Train")
+        
+        print("Validation dataset:")
+        print("Number of datapoints: \(validDataPoints)")
+        print("Root location: ./data/")
+        print("Split: Test")
+    } else {
+        print("Failed to load MNIST dataset.")
+    }
+    
+    print("Training step completed.")
+    semaphore.signal()  // Signal that the download is completed
+}
+
+// Wait for the downloads to finish before exiting
+semaphore.wait()
+print("Program finished.")
+
 // Get the default metal device
 guard let device = MTLCreateSystemDefaultDevice() else {
     fatalError("Metal is not supported on this device")
