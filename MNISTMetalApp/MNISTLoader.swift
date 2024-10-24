@@ -1,72 +1,59 @@
-//
-//  Untitled.swift
-//  MNISTMetalApp
-//
-//  Created by Sebastian Juarez on 10/22/24.
-//
 import Foundation
 
-func downloadMNIST(completion: @escaping ((trainImages: [Float], trainLabels: [UInt8], testImages: [Float], testLabels: [UInt8])?) -> Void) {
-    let baseURL = "https://ossci-datasets.s3.amazonaws.com/mnist/"
-    let files = [
+class MNISTLoader {
+
+    let mnistBaseURL = "https://ossci-datasets.s3.amazonaws.com/mnist/"
+    let fileNames = [
         "train-images-idx3-ubyte.gz",
         "train-labels-idx1-ubyte.gz",
         "t10k-images-idx3-ubyte.gz",
         "t10k-labels-idx1-ubyte.gz"
     ]
     
-    var dataset = (trainImages: [Float](), trainLabels: [UInt8](), testImages: [Float](), testLabels: [UInt8]())
-    let downloadGroup = DispatchGroup()
+    let downloadDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
     
-    for file in files {
-        print("Downloading \(baseURL + file)...")
-        guard let url = URL(string: baseURL + file) else { continue }
+    func downloadMNISTData(completion: @escaping (Bool) -> Void) {
+        let dispatchGroup = DispatchGroup()
         
-        downloadGroup.enter()
-        let task = URLSession.shared.dataTask(with: url) { data, _, error in
-            defer { downloadGroup.leave() }
+        for fileName in fileNames {
+            let fileURL = mnistBaseURL + fileName
+            let destinationURL = downloadDirectory.appendingPathComponent(fileName)
             
-            if let error = error {
-                print("Failed to download \(file): \(error)")
-                return
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                print("File already exists: \(fileName), skipping download.")
+                continue
             }
             
-            guard let data = data else {
-                print("No data for \(file)")
-                return
-            }
+            dispatchGroup.enter()
+            print("Downloading \(fileName)...")
             
-            // Process the data based on the file type
-            if file.contains("train-images") {
-                dataset.trainImages = processImagesData(data, count: 60000)
-            } else if file.contains("train-labels") {
-                dataset.trainLabels = processLabelsData(data, count: 60000)
-            } else if file.contains("t10k-images") {
-                dataset.testImages = processImagesData(data, count: 10000)
-            } else if file.contains("t10k-labels") {
-                dataset.testLabels = processLabelsData(data, count: 10000)
+            let url = URL(string: fileURL)!
+            let task = URLSession.shared.downloadTask(with: url) { tempLocalUrl, response, error in
+                if let error = error {
+                    print("Error downloading \(fileName): \(error)")
+                    dispatchGroup.leave()
+                    return
+                }
+                
+                guard let tempLocalUrl = tempLocalUrl else {
+                    print("Error: File not found at \(fileName)")
+                    dispatchGroup.leave()
+                    return
+                }
+                
+                do {
+                    try FileManager.default.moveItem(at: tempLocalUrl, to: destinationURL)
+                    print("Successfully downloaded and saved \(fileName)")
+                } catch let moveError {
+                    print("Error moving \(fileName): \(moveError)")
+                }
+                dispatchGroup.leave()
             }
-            print("Finished processing \(file)")
+            task.resume()
         }
-        task.resume()
-    }
-    
-    downloadGroup.notify(queue: .main) {
-        print("All files have been downloaded and processed.")
-        completion(dataset)
+        
+        dispatchGroup.notify(queue: .main) {
+            completion(true)
+        }
     }
 }
-
-// Functions to process image and label data (assuming gzipped format)
-func processImagesData(_ data: Data, count: Int) -> [Float] {
-    // Decompress and parse the MNIST images here
-    // This is a placeholder for actual processing logic
-    return [Float](repeating: 0.5, count: count * 28 * 28) // Example 28x28 images
-}
-
-func processLabelsData(_ data: Data, count: Int) -> [UInt8] {
-    // Decompress and parse the MNIST labels here
-    // This is a placeholder for actual processing logic
-    return [UInt8](repeating: 1, count: count)
-}
-

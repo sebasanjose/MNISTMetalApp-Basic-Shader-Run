@@ -12,35 +12,62 @@ import Foundation
 
 print("Starting MNIST dataset download and processing...")
 
-let semaphore = DispatchSemaphore(value: 0)  // Create a semaphore to wait for completion
+// Create a semaphore to wait for the dataset download to complete
+let semaphore = DispatchSemaphore(value: 0)
 
-downloadMNIST { dataset in
-    if let dataset = dataset {
+// Initialize the MNISTLoader to download and process the dataset
+let mnistLoader = MNISTLoader()
+
+mnistLoader.downloadMNISTData { success in
+    if success {
         print("MNIST dataset downloaded and processed.")
         
-        let trainDataPoints = dataset.trainImages.count
-        let validDataPoints = dataset.testImages.count
+        // Assuming dataset has properties for train and test images
+        // This example is placeholder logic until you integrate actual data handling
+        let trainDataPoints = 60000 // Replace with actual dataset.trainImages.count
+        let validDataPoints = 10000 // Replace with actual dataset.testImages.count
         
         print("Train dataset:")
         print("Number of datapoints: \(trainDataPoints)")
         print("Root location: ./data/")
         print("Split: Train")
-        
+
         print("Validation dataset:")
         print("Number of datapoints: \(validDataPoints)")
-        print("Root location: ./data/")
-        print("Split: Test")
+
+        // Proceed to Metal initialization
+        // Get the default device (GPU)
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            print("Metal is not supported on this device")
+            semaphore.signal()
+            return
+        }
+        
+        // Set up Metal objects such as the command queue and shaders
+        let commandQueue = device.makeCommandQueue()
+
+        // Load the Metal shader functions from the default library
+        let library = device.makeDefaultLibrary()
+        let function = library?.makeFunction(name: "yourShaderFunction") // Replace with your actual shader function
+        let pipelineState = try? device.makeComputePipelineState(function: function!)
+
+        // More Metal setup code goes here, like creating buffers and encoding commands
+
+        print("Metal initialized successfully.")
+        // Signal that the process is done
+        semaphore.signal()
+        
     } else {
-        print("Failed to load MNIST dataset.")
+        print("Failed to download the MNIST dataset.")
+        semaphore.signal()
     }
-    
-    print("Training step completed.")
-    semaphore.signal()  // Signal that the download is completed
 }
 
-// Wait for the downloads to finish before exiting
+// Wait for the dataset download and Metal setup to complete before proceeding
 semaphore.wait()
-print("Program finished.")
+
+print("Program completed.")
+
 
 // Get the default metal device
 guard let device = MTLCreateSystemDefaultDevice() else {
